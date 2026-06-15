@@ -1,0 +1,25 @@
+# Virtual Environment (Môi trường ảo)
+venv/
+env/
+.env
+
+# Project Folders (Các thư mục chứa dữ liệu và kết quả)
+inputs/
+outputs/
+templates/
+
+# Python Cache (Các file rác do Python tự sinh ra)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS generated files (File ẩn của hệ điều hành - vì bạn đang dùng máy Mac)
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
