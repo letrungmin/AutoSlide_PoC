@@ -23,9 +23,20 @@ from pptx.enum.chart import XL_CHART_TYPE
 st.set_page_config(page_title="Universal AI Report Generator", layout="wide")
 
 load_dotenv()
-LLAMA3_API_KEY = os.getenv("GROQ_API_KEY")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+if "GROQ_API_KEY" in st.secrets:
+    LLAMA3_API_KEY = st.secrets["GROQ_API_KEY"]
+    PEXELS_API_KEY = st.secrets.get("PEXELS_API_KEY", "")
+else:
+    LLAMA3_API_KEY = os.getenv("GROQ_API_KEY")
+    PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+if not LLAMA3_API_KEY:
+    st.error("🚨 Ứng dụng đang thiếu API Key! Vui lòng vào Cài đặt (Settings) -> Secrets trên Streamlit Cloud để nhập GROQ_API_KEY.")
+    st.stop()
+
 LLAMA3_BASE_URL = "https://api.groq.com/openai/v1" 
+client = OpenAI(api_key=LLAMA3_API_KEY, base_url=LLAMA3_BASE_URL)
 
 THEME = {
     "bg": RGBColor(255, 255, 255),        

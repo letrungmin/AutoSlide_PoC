@@ -1,6 +1,0 @@
-streamlit
-python-docx
-python-pptx
-requests
-python-dotenv
-openai
