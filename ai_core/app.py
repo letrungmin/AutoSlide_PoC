@@ -128,6 +128,8 @@ def get_slide_json_from_llama3(chunks, status_container):
                 "company_domain": "",
                 "image_prompt": "10 english words description",
                 "takeaway": "Short concluding sentence",
+                "positive_stocks": [],
+                "negative_stocks": [],
                 "bullets": ["Complete idea 1", "Complete idea 2"],
                 "table_data": [],
                 "chart_data": {}
@@ -186,9 +188,12 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
     # Render Cover Slide
     try:
         cover_slide = prs.slides.add_slide(prs.slide_layouts[0])
-        for shape in cover_slide.placeholders:
-            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
-                shape.text = report_title.upper()
+        if cover_slide.shapes.title:
+            cover_slide.shapes.title.text = report_title.upper()
+            try:
+                for p in cover_slide.shapes.title.text_frame.paragraphs:
+                    p.font.color.rgb = theme["title"]
+            except: pass
     except Exception:
         pass
 
@@ -204,32 +209,36 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
         takeaway = str(s_info.get('takeaway') or '')
         
         raw_bullets = [str(b).strip() for b in (s_info.get('bullets') or []) if str(b).strip()]
-        cleaned_bullets = []
-        for b in raw_bullets:
-            if len(b) < 25 and len(cleaned_bullets) > 0:
-                cleaned_bullets[-1] += " " + b
-            else:
-                cleaned_bullets.append(b)
-                
-        if not cleaned_bullets: 
-            cleaned_bullets = ["System is summarizing data..."]
-        bullets = cleaned_bullets
+        bullets = raw_bullets if raw_bullets else ["System is summarizing data..."]
+        
+        p_stocks = s_info.get('positive_stocks') or []
+        n_stocks = s_info.get('negative_stocks') or []
+        
+        # Merge stocks into bullets to avoid layout overlapping
+        if p_stocks or n_stocks:
+            stock_txt = "Market Signals: "
+            if p_stocks: stock_txt += f"Positive ({', '.join(p_stocks)}). "
+            if n_stocks: stock_txt += f"Negative ({', '.join(n_stocks)})."
+            bullets.insert(0, stock_txt)
 
-        # Always use Layout 1 (Title and Content) to inherit Master Slide standards
+        # Force use Layout 1 to strictly inherit Master Slide properties
         layout_idx = 1 if len(prs.slide_layouts) > 1 else 0
         slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-        title_shape = None
-        body_shape = None
-        
-        for shape in slide.placeholders:
-            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
-                title_shape = shape
-            elif shape.placeholder_format.type in [PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT]:
-                body_shape = shape
+        # 1. Inject Title natively (Automatically replaces "Click to add title")
+        if slide.shapes.title:
+            slide.shapes.title.text = title.upper()
+            try:
+                for p in slide.shapes.title.text_frame.paragraphs:
+                    p.font.color.rgb = theme["title"]
+            except: pass
 
-        if title_shape:
-            title_shape.text = title.upper()
+        # 2. Find Native Body Placeholder
+        body_shape = None
+        for shape in slide.placeholders:
+            if shape.placeholder_format.type in [2, 7]: # 2 = BODY, 7 = OBJECT
+                body_shape = shape
+                break
 
         if not body_shape:
             continue
@@ -239,9 +248,15 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
         avail_w = body_shape.width
         avail_h = body_shape.height
 
+        # Shrink body height safely if there is a takeaway banner at the bottom
+        if takeaway and (avail_top + avail_h > prs.slide_height - Inches(1.0)):
+            avail_h = prs.slide_height - avail_top - Inches(1.2)
+            body_shape.height = avail_h
+
+        # 3. Content Rendering
         if s_type == 'table':
             sp = body_shape.element
-            sp.getparent().remove(sp)
+            sp.getparent().remove(sp) # Delete placeholder, inject Table
             t_data = s_info.get('table_data', [])
             if len(t_data) > 1:
                 rows, cols = len(t_data), len(t_data[0])
@@ -253,7 +268,7 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
 
         elif s_type == 'chart':
             sp = body_shape.element
-            sp.getparent().remove(sp)
+            sp.getparent().remove(sp) # Delete placeholder, inject Chart
             c_data_dict = s_info.get('chart_data', {})
             try:
                 clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
@@ -263,16 +278,13 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
                 slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, avail_left, avail_top, avail_w, avail_h, c_data)
             except: pass
 
-        if s_type == 'text':
+        elif s_type == 'text':
             domain = str(s_info.get('company_domain', '')).strip()
             img_path = f"temp_{i}.png"
             has_img = False
             
             if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
             elif get_image_robust(str(s_info.get('image_prompt', 'business')), "business", img_path): has_img = True
-            
-            tf = body_shape.text_frame
-            tf.clear() 
             
             if has_img:
                 half_w = int(avail_w * 0.5)
@@ -282,16 +294,21 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
                     slide.shapes.add_picture(img_path, img_left, avail_top, width=half_w - Inches(0.2))
                     os.remove(img_path)
                 except: pass
+            
+            # STRICT NATIVE INJECTION (PowerPoint will auto-fit and auto-bullet this!)
+            body_shape.text = "\n".join(bullets)
+            try:
+                for p in body_shape.text_frame.paragraphs:
+                    p.font.color.rgb = theme["text"]
+            except: pass
 
-            for b_idx, b_text in enumerate(bullets):
-                p = tf.paragraphs[0] if b_idx == 0 else tf.add_paragraph()
-                p.text = b_text
-                p.level = 0 
-
+        # 4. Add Takeaway Banner
         if takeaway:
             ban_top = prs.slide_height - Inches(0.8)
             ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), ban_top, prs.slide_width - Inches(1.0), Inches(0.5))
-            ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
+            ban.fill.solid()
+            ban.fill.fore_color.rgb = theme["card_border"]
+            ban.line.fill.background = None
             
             tf = ban.text_frame
             p = tf.paragraphs[0]
