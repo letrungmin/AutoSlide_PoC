@@ -6,6 +6,8 @@ import os
 import io
 import urllib.parse
 import random
+import PyPDF2
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
 from pptx import Presentation
@@ -57,7 +59,7 @@ def generate_ai_image(image_prompt, filepath):
     try:
         style = "modern corporate finance, high-tech glass building, glowing digital data charts, professional lighting, cinematic, hyper-realistic, 8k resolution, clean minimalist design --ar 16:9"
         encoded = urllib.parse.quote(f"{image_prompt}, {style}")
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=576&nologo=true&seed={random.randint(1, 100000)}", headers=headers, timeout=20)
         if res.status_code == 200 and len(res.content) > 5000: 
             with open(filepath, 'wb') as f: f.write(res.content)
@@ -80,25 +82,43 @@ def get_image_robust(prompt, keyword, filepath):
     if generate_ai_image(prompt, filepath): return True
     return download_image_pexels(keyword, filepath)
 
+def chunk_text(text, max_words=600):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), max_words):
+        chunks.append(" ".join(words[i:i+max_words]))
+    return chunks
+
 def get_semantic_chunks_from_docx(file_stream, max_words=600):
     file_stream.seek(0) 
     doc = docx.Document(file_stream)
-    chunks, curr, count = [], [], 0
-    for para in doc.paragraphs:
-        txt = para.text.strip()
-        if txt: 
-            curr.append(txt + " ") 
-            count += len(txt.split())
-            if count >= max_words:
-                chunks.append("\n\n".join(curr))
-                curr, count = [], 0
-    if curr: chunks.append("\n\n".join(curr))
-    return chunks
+    text = "\n".join([para.text.strip() for para in doc.paragraphs if para.text.strip()])
+    return chunk_text(text, max_words)
 
-def get_slide_json_from_llama3(file_stream, status_container):
-    chunks = get_semantic_chunks_from_docx(file_stream)
-    all_slides = []
+def get_semantic_chunks_from_pdf(file_stream, max_words=600):
+    file_stream.seek(0)
+    reader = PyPDF2.PdfReader(file_stream)
+    text = ""
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    return chunk_text(text, max_words)
+
+def get_semantic_chunks_from_url(url, max_words=600):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    res = requests.get(url, headers=headers, timeout=15)
+    res.raise_for_status()
+    soup = BeautifulSoup(res.content, "html.parser")
     
+    for script in soup(["script", "style", "nav", "footer", "header"]):
+        script.extract()
+        
+    text = soup.get_text(separator=' ', strip=True)
+    return chunk_text(text, max_words)
+
+def get_slide_json_from_llama3(chunks, status_container):
+    all_slides = []
     system_prompt = """
     Convert text into JSON Presentation. MUST KEEP DIACRITICS IF ANY.
     MUST RETURN JSON IN THIS EXACT FORMAT:
@@ -358,23 +378,44 @@ def main():
         selected_template_path = available_templates[selected_template_name]
         
         st.markdown("---")
-        custom_template = st.file_uploader("Or upload your custom template (.pptx)", type="pptx")
+        custom_template = st.file_uploader("Upload Custom Template (.pptx)", type="pptx")
         
-    uf = st.file_uploader("Upload Word Document (.docx)", type="docx")
+    st.subheader("Data Source")
+    input_source = st.radio("Select input method:", ["File Upload (DOCX/PDF)", "Website URL"], label_visibility="collapsed")
     
-    if uf:
-        if st.button("1. Analyze Document", type="primary"):
-            with st.status("AI is analyzing the document...") as status:
-                try:
-                    js = get_slide_json_from_llama3(uf, status)
-                    if js and len(js.get('slides', [])) > 0:
-                        st.session_state.slide_data = js
-                        st.session_state.ppt_buffer = None
-                        status.update(label="Analysis complete! Please review the slides below.", state="complete")
-                    else: 
-                        status.update(label="System could not extract data from this document.", state="error")
-                except Exception as e: 
-                    status.update(label=f"System Error: {str(e)}", state="error")
+    uf = None
+    url_input = ""
+    
+    if input_source == "File Upload (DOCX/PDF)":
+        uf = st.file_uploader("Upload Document", type=["docx", "pdf"])
+    else:
+        url_input = st.text_input("Enter Web Article URL")
+        
+    if (uf or url_input) and st.button("1. Analyze Content", type="primary"):
+        with st.status("Analyzing source content...") as status:
+            try:
+                chunks = []
+                if uf and uf.name.endswith('.docx'):
+                    chunks = get_semantic_chunks_from_docx(uf)
+                elif uf and uf.name.endswith('.pdf'):
+                    chunks = get_semantic_chunks_from_pdf(uf)
+                elif url_input:
+                    status.update(label="Fetching website content...")
+                    chunks = get_semantic_chunks_from_url(url_input)
+                    
+                if not chunks:
+                    status.update(label="No readable text found in the source.", state="error")
+                    st.stop()
+                    
+                js = get_slide_json_from_llama3(chunks, status)
+                if js and len(js.get('slides', [])) > 0:
+                    st.session_state.slide_data = js
+                    st.session_state.ppt_buffer = None
+                    status.update(label="Analysis complete. Please review the slides below.", state="complete")
+                else: 
+                    status.update(label="System could not extract structured data.", state="error")
+            except Exception as e: 
+                status.update(label=f"System Error: {str(e)}", state="error")
 
     if st.session_state.slide_data:
         st.markdown("---")
@@ -403,7 +444,7 @@ def main():
                 try:
                     buf = render_pptx_clean(st.session_state.edited_data, template_source, report_title)
                     st.session_state.ppt_buffer = buf
-                    st.success("PowerPoint generated successfully!")
+                    st.success("PowerPoint generated successfully.")
                 except Exception as e:
                     st.error(f"Render Error: {str(e)}")
 
