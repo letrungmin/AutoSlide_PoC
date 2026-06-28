@@ -104,18 +104,22 @@ def get_semantic_chunks_from_url(url, max_words=600):
     res = requests.get(url, headers=headers, timeout=15)
     res.raise_for_status()
     soup = BeautifulSoup(res.content, "html.parser")
-    
     for script in soup(["script", "style", "nav", "footer", "header"]):
         script.extract()
-        
     text = soup.get_text(separator=' ', strip=True)
     return chunk_text(text, max_words)
 
 def get_slide_json_from_llama3(chunks, status_container):
     all_slides = []
-    system_prompt = """
-    Convert text into JSON Presentation. MUST KEEP DIACRITICS IF ANY.
-    MUST RETURN JSON IN THIS EXACT FORMAT:
+    
+    researcher_prompt = """
+    You are a Data Extraction Agent. Analyze the provided text and extract the key facts, statistics, and core logical arguments.
+    Organize the extracted information into a structured outline suitable for a professional presentation.
+    Do not invent information. Ensure diacritics are preserved.
+    """
+    
+    designer_prompt = """
+    You are a Presentation Design Agent. Convert the provided research notes into this EXACT JSON format.
     {
         "slides": [
             {
@@ -126,50 +130,55 @@ def get_slide_json_from_llama3(chunks, status_container):
                 "takeaway": "Short concluding sentence",
                 "positive_stocks": [],
                 "negative_stocks": [],
-                "bullets": ["Complete idea 1", "Complete idea 2", "Complete idea 3"],
+                "bullets": ["Complete idea 1", "Complete idea 2"],
                 "table_data": [],
                 "chart_data": {}
             }
         ]
     }
-    
     RULES:
-    1. TYPE CLASSIFICATION: 
-       - Roadmap/Stages/Timeline -> "type": "table", "table_data": [["Time", "Event"]]
-       - Proportions/% -> "type": "chart", "chart_data": {"Item 1": 60, "Item 2": 40}
-       - Others MUST return -> "type": "text"
-    2. NO EMPTY BULLETS & NO INCOMPLETE SENTENCES: 
-       - SUMMARIZE LOGICALLY. NEVER LEAVE 'bullets' ARRAY EMPTY [].
-       - NEVER CUT OFF SENTENCES. Each element in 'bullets' must be a complete idea.
+    1. TYPE: "table" for timelines, "chart" for proportions, "text" for everything else.
+    2. NO EMPTY BULLETS.
     """
     
     for i, chunk in enumerate(chunks):
-        status_container.write(f"Extracting JSON data (Batch {i+1}/{len(chunks)})...")
-        retries = 3
-        while retries > 0:
-            try:
-                res = client.chat.completions.create(
-                    model="llama-3.1-8b-instant", 
-                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": chunk}],
-                    temperature=0.2, response_format={"type": "json_object"}
-                )
-                content = res.choices[0].message.content.strip()
-                content = content.replace("```json", "").replace("```", "").strip()
-                chunk_json = json.loads(content)
-                
-                if isinstance(chunk_json, dict):
-                    if "slides" in chunk_json: all_slides.extend(chunk_json["slides"])
-                    elif "slide" in chunk_json: all_slides.extend(chunk_json["slide"])
-                    elif "presentation" in chunk_json: all_slides.extend(chunk_json["presentation"])
-                    elif "data" in chunk_json: all_slides.extend(chunk_json["data"])
-                    elif "title" in chunk_json: all_slides.append(chunk_json)
-                elif isinstance(chunk_json, list): all_slides.extend(chunk_json)
+        status_container.write(f"Agent 1 (Researcher) analyzing data batch {i+1}/{len(chunks)}...")
+        try:
+            research_res = client.chat.completions.create(
+                model="llama-3.1-8b-instant", 
+                messages=[{"role": "system", "content": researcher_prompt}, {"role": "user", "content": chunk}],
+                temperature=0.1
+            )
+            research_notes = research_res.choices[0].message.content.strip()
+            
+            status_container.write(f"Agent 2 (Designer) structuring JSON for batch {i+1}...")
+            retries = 3
+            while retries > 0:
+                try:
+                    design_res = client.chat.completions.create(
+                        model="llama-3.1-8b-instant", 
+                        messages=[{"role": "system", "content": designer_prompt}, {"role": "user", "content": research_notes}],
+                        temperature=0.1, response_format={"type": "json_object"}
+                    )
+                    content = design_res.choices[0].message.content.strip()
+                    content = content.replace("```json", "").replace("```", "").strip()
+                    chunk_json = json.loads(content)
                     
-                break
-            except Exception as e:
-                retries -= 1
-                if retries == 0: 
-                    status_container.error(f"JSON extraction error at batch {i+1}: {e}")
+                    if isinstance(chunk_json, dict):
+                        if "slides" in chunk_json: all_slides.extend(chunk_json["slides"])
+                        elif "slide" in chunk_json: all_slides.extend(chunk_json["slide"])
+                        elif "presentation" in chunk_json: all_slides.extend(chunk_json["presentation"])
+                        elif "data" in chunk_json: all_slides.extend(chunk_json["data"])
+                        elif "title" in chunk_json: all_slides.append(chunk_json)
+                    elif isinstance(chunk_json, list): all_slides.extend(chunk_json)
+                        
+                    break
+                except Exception as e:
+                    retries -= 1
+                    if retries == 0: 
+                        status_container.error(f"Designer Agent error at batch {i+1}: {e}")
+        except Exception as e:
+            status_container.error(f"Researcher Agent error at batch {i+1}: {e}")
                     
     return {"slides": all_slides}
 
@@ -431,7 +440,7 @@ def main():
         url_input = st.text_input("Enter Web Article URL")
         
     if (uf or url_input) and st.button("1. Analyze Content", type="primary"):
-        with st.status("Analyzing source content...") as status:
+        with st.status("Processing multi-agent pipeline...") as status:
             try:
                 chunks = []
                 if uf and uf.name.endswith('.docx'):
@@ -450,9 +459,9 @@ def main():
                 if js and len(js.get('slides', [])) > 0:
                     st.session_state.slide_data = js
                     st.session_state.ppt_buffer = None
-                    status.update(label="Analysis complete. Please review the slides below.", state="complete")
+                    status.update(label="Pipeline execution complete.", state="complete")
                 else: 
-                    status.update(label="System could not extract structured data.", state="error")
+                    status.update(label="Agents failed to extract structured data.", state="error")
             except Exception as e: 
                 status.update(label=f"System Error: {str(e)}", state="error")
 
