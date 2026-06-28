@@ -368,7 +368,7 @@ def main():
     with st.sidebar:
         st.header("Cấu hình Báo Cáo")
         report_title = st.text_input("Tên Trang Bìa:", "BÁO CÁO PHÂN TÍCH")
-        tpl = st.text_input("Đường dẫn Template:", "templates/template_cong_ty_moi.pptx")
+        tpl = st.text_input("Đường dẫn Template:", "ai_core/templates/template_cong_ty_moi.pptx")
         st.info("Mẹo: Hãy mở file template .pptx của bạn lên, vào thẻ View -> Slide Master và xóa hết các logo/text cũ để làm sạch phôi trắng nhé.")
         
     uf = st.file_uploader("Tải lên tài liệu Word (.docx)", type="docx")
