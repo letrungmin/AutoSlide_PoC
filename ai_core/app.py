@@ -14,7 +14,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE, PP_PLACEHOLDER
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
 
@@ -104,22 +104,18 @@ def get_semantic_chunks_from_url(url, max_words=600):
     res = requests.get(url, headers=headers, timeout=15)
     res.raise_for_status()
     soup = BeautifulSoup(res.content, "html.parser")
+    
     for script in soup(["script", "style", "nav", "footer", "header"]):
         script.extract()
+        
     text = soup.get_text(separator=' ', strip=True)
     return chunk_text(text, max_words)
 
 def get_slide_json_from_llama3(chunks, status_container):
     all_slides = []
-    
-    researcher_prompt = """
-    You are a Data Extraction Agent. Analyze the provided text and extract the key facts, statistics, and core logical arguments.
-    Organize the extracted information into a structured outline suitable for a professional presentation.
-    Do not invent information. Ensure diacritics are preserved.
-    """
-    
-    designer_prompt = """
-    You are a Presentation Design Agent. Convert the provided research notes into this EXACT JSON format.
+    system_prompt = """
+    Convert text into JSON Presentation. MUST KEEP DIACRITICS IF ANY.
+    MUST RETURN JSON IN THIS EXACT FORMAT:
     {
         "slides": [
             {
@@ -130,70 +126,93 @@ def get_slide_json_from_llama3(chunks, status_container):
                 "takeaway": "Short concluding sentence",
                 "positive_stocks": [],
                 "negative_stocks": [],
-                "bullets": ["Complete idea 1", "Complete idea 2"],
+                "bullets": ["Complete idea 1", "Complete idea 2", "Complete idea 3"],
                 "table_data": [],
                 "chart_data": {}
             }
         ]
     }
+    
     RULES:
-    1. TYPE: "table" for timelines, "chart" for proportions, "text" for everything else.
-    2. NO EMPTY BULLETS.
+    1. TYPE CLASSIFICATION: 
+       - Roadmap/Stages/Timeline -> "type": "table", "table_data": [["Time", "Event"]]
+       - Proportions/% -> "type": "chart", "chart_data": {"Item 1": 60, "Item 2": 40}
+       - Others MUST return -> "type": "text"
+    2. NO EMPTY BULLETS & NO INCOMPLETE SENTENCES: 
+       - SUMMARIZE LOGICALLY. NEVER LEAVE 'bullets' ARRAY EMPTY [].
+       - NEVER CUT OFF SENTENCES. Each element in 'bullets' must be a complete idea.
     """
     
     for i, chunk in enumerate(chunks):
-        status_container.write(f"Agent 1 (Researcher) analyzing data batch {i+1}/{len(chunks)}...")
-        try:
-            research_res = client.chat.completions.create(
-                model="llama-3.1-8b-instant", 
-                messages=[{"role": "system", "content": researcher_prompt}, {"role": "user", "content": chunk}],
-                temperature=0.1
-            )
-            research_notes = research_res.choices[0].message.content.strip()
-            
-            status_container.write(f"Agent 2 (Designer) structuring JSON for batch {i+1}...")
-            retries = 3
-            while retries > 0:
-                try:
-                    design_res = client.chat.completions.create(
-                        model="llama-3.1-8b-instant", 
-                        messages=[{"role": "system", "content": designer_prompt}, {"role": "user", "content": research_notes}],
-                        temperature=0.1, response_format={"type": "json_object"}
-                    )
-                    content = design_res.choices[0].message.content.strip()
-                    content = content.replace("```json", "").replace("```", "").strip()
-                    chunk_json = json.loads(content)
+        status_container.write(f"Extracting JSON data (Batch {i+1}/{len(chunks)})...")
+        retries = 3
+        while retries > 0:
+            try:
+                res = client.chat.completions.create(
+                    model="llama-3.1-8b-instant", 
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": chunk}],
+                    temperature=0.2, response_format={"type": "json_object"}
+                )
+                content = res.choices[0].message.content.strip()
+                content = content.replace("```json", "").replace("```", "").strip()
+                chunk_json = json.loads(content)
+                
+                if isinstance(chunk_json, dict):
+                    if "slides" in chunk_json: all_slides.extend(chunk_json["slides"])
+                    elif "slide" in chunk_json: all_slides.extend(chunk_json["slide"])
+                    elif "presentation" in chunk_json: all_slides.extend(chunk_json["presentation"])
+                    elif "data" in chunk_json: all_slides.extend(chunk_json["data"])
+                    elif "title" in chunk_json: all_slides.append(chunk_json)
+                elif isinstance(chunk_json, list): all_slides.extend(chunk_json)
                     
-                    if isinstance(chunk_json, dict):
-                        if "slides" in chunk_json: all_slides.extend(chunk_json["slides"])
-                        elif "slide" in chunk_json: all_slides.extend(chunk_json["slide"])
-                        elif "presentation" in chunk_json: all_slides.extend(chunk_json["presentation"])
-                        elif "data" in chunk_json: all_slides.extend(chunk_json["data"])
-                        elif "title" in chunk_json: all_slides.append(chunk_json)
-                    elif isinstance(chunk_json, list): all_slides.extend(chunk_json)
-                        
-                    break
-                except Exception as e:
-                    retries -= 1
-                    if retries == 0: 
-                        status_container.error(f"Designer Agent error at batch {i+1}: {e}")
-        except Exception as e:
-            status_container.error(f"Researcher Agent error at batch {i+1}: {e}")
+                break
+            except Exception as e:
+                retries -= 1
+                if retries == 0: 
+                    status_container.error(f"JSON extraction error at batch {i+1}: {e}")
                     
     return {"slides": all_slides}
+
+def get_dynamic_pt(text, default_size):
+    length = len(str(text))
+    if length < 30: return Pt(default_size + 4)
+    elif length < 80: return Pt(default_size)
+    elif length < 150: return Pt(max(12, default_size - 3))
+    else: return Pt(max(11, default_size - 6))
+
+def set_p_format(paragraph, text, font_size, bold=False, color_rgb=None, alignment=None):
+    paragraph.text = str(text)
+    font = paragraph.font
+    font.name = 'Arial'
+    font.size = font_size
+    font.bold = bold
+    if color_rgb: font.color.rgb = color_rgb
+    if alignment: paragraph.alignment = alignment
+    
+    if hasattr(paragraph, '_parent'):
+        tf = paragraph._parent
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+def add_editable_stock_tag(slide, x, y, stock_code, trend, theme):
+    tag = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, Inches(1.1), Inches(0.4))
+    bg_color = theme["accent"] if trend == 'up' else RGBColor(220, 38, 38)
+    tag.fill.solid(); tag.fill.fore_color.rgb = bg_color; tag.line.fill.background = None
+    
+    tf = tag.text_frame
+    tf.margin_left = tf.margin_right = Inches(0.05)
+    set_p_format(tf.paragraphs[0], stock_code.upper(), get_dynamic_pt(stock_code, 12), True, RGBColor(255, 255, 255), PP_ALIGN.CENTER)
 
 def render_pptx_clean(slide_data, template_source, report_title, theme):
     prs = Presentation(template_source)
     
-    # Render Cover Slide
     try:
         cover_slide = prs.slides.add_slide(prs.slide_layouts[0])
-        if cover_slide.shapes.title:
-            cover_slide.shapes.title.text = report_title.upper()
-            try:
-                for p in cover_slide.shapes.title.text_frame.paragraphs:
-                    p.font.color.rgb = theme["title"]
-            except: pass
+        for shape in cover_slide.placeholders:
+            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
+                shape.text = report_title.upper()
+                if shape.has_text_frame and shape.text_frame.paragraphs:
+                    shape.text_frame.paragraphs[0].font.color.rgb = theme["title"]
     except Exception:
         pass
 
@@ -209,117 +228,146 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
         takeaway = str(s_info.get('takeaway') or '')
         
         raw_bullets = [str(b).strip() for b in (s_info.get('bullets') or []) if str(b).strip()]
-        bullets = raw_bullets if raw_bullets else ["System is summarizing data..."]
+        cleaned_bullets = []
+        for b in raw_bullets:
+            if len(b) < 25 and len(cleaned_bullets) > 0:
+                cleaned_bullets[-1] += " " + b
+            else:
+                cleaned_bullets.append(b)
+                
+        if not cleaned_bullets: 
+            cleaned_bullets = ["System is summarizing data...", "Please verify with the original document."]
+        bullets = cleaned_bullets
         
         p_stocks = s_info.get('positive_stocks') or []
         n_stocks = s_info.get('negative_stocks') or []
-        
-        # Merge stocks into bullets to avoid layout overlapping
-        if p_stocks or n_stocks:
-            stock_txt = "Market Signals: "
-            if p_stocks: stock_txt += f"Positive ({', '.join(p_stocks)}). "
-            if n_stocks: stock_txt += f"Negative ({', '.join(n_stocks)})."
-            bullets.insert(0, stock_txt)
 
-        # Force use Layout 1 to strictly inherit Master Slide properties
         layout_idx = 1 if len(prs.slide_layouts) > 1 else 0
         slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-        # 1. Inject Title natively (Automatically replaces "Click to add title")
-        if slide.shapes.title:
-            slide.shapes.title.text = title.upper()
-            try:
-                for p in slide.shapes.title.text_frame.paragraphs:
-                    p.font.color.rgb = theme["title"]
-            except: pass
-
-        # 2. Find Native Body Placeholder
+        title_shape = None
         body_shape = None
+        
         for shape in slide.placeholders:
-            if shape.placeholder_format.type in [2, 7]: # 2 = BODY, 7 = OBJECT
+            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
+                title_shape = shape
+            elif shape.placeholder_format.type in [PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT]:
                 body_shape = shape
-                break
 
-        if not body_shape:
-            continue
+        if title_shape:
+            title_shape.text = title.upper()
+            if title_shape.has_text_frame and title_shape.text_frame.paragraphs:
+                title_shape.text_frame.paragraphs[0].font.color.rgb = theme["title"]
+        else:
+            p_title = slide.shapes.add_textbox(Inches(0.5), Inches(0.8), prs.slide_width - Inches(1.0), Inches(0.8)).text_frame
+            set_p_format(p_title.paragraphs[0], title.upper(), get_dynamic_pt(title, 32), True, theme["title"])
 
-        avail_left = body_shape.left
-        avail_top = body_shape.top
-        avail_w = body_shape.width
-        avail_h = body_shape.height
+        content_left = Inches(0.5)
+        content_top = Inches(1.8)
+        avail_w = prs.slide_width - Inches(1.0)
+        avail_h = prs.slide_height - Inches(2.8)
 
-        # Shrink body height safely if there is a takeaway banner at the bottom
-        if takeaway and (avail_top + avail_h > prs.slide_height - Inches(1.0)):
-            avail_h = prs.slide_height - avail_top - Inches(1.2)
-            body_shape.height = avail_h
-
-        # 3. Content Rendering
-        if s_type == 'table':
+        if body_shape:
+            content_left = body_shape.left
+            content_top = body_shape.top
+            avail_w = body_shape.width
+            avail_h = body_shape.height
             sp = body_shape.element
-            sp.getparent().remove(sp) # Delete placeholder, inject Table
+            sp.getparent().remove(sp)
+
+        curr_x = content_left
+        for st_code in p_stocks:
+            add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up', theme)
+            curr_x += Inches(1.2)
+        for st_code in n_stocks:
+            add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'down', theme)
+            curr_x += Inches(1.2)
+            
+        if p_stocks or n_stocks: 
+            content_top += Inches(0.6) 
+            avail_h -= Inches(0.6)
+
+        if s_type == 'table':
             t_data = s_info.get('table_data', [])
-            if len(t_data) > 1:
-                rows, cols = len(t_data), len(t_data[0])
-                table_shape = slide.shapes.add_table(rows, cols, avail_left, avail_top, avail_w, avail_h)
-                table = table_shape.table
-                for r_idx, row_data in enumerate(t_data):
-                    for c_idx, cell_data in enumerate(row_data):
-                        table.cell(r_idx, c_idx).text = str(cell_data)
+            nodes = t_data[1:] if len(t_data) > 1 else t_data
+            if not nodes: 
+                s_type = 'text'
+            else:
+                step = avail_w / max(len(nodes), 1)
+                axis_y = content_top + Inches(1.0)
+                
+                line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, content_left, axis_y, avail_w, Inches(0.05))
+                line.fill.solid(); line.fill.fore_color.rgb = theme["accent"]
+                
+                for n_idx, node in enumerate(nodes):
+                    cx = content_left + (n_idx * step) + (step / 2)
+                    dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, cx - Inches(0.12), axis_y - Inches(0.1), Inches(0.24), Inches(0.24))
+                    dot.fill.solid(); dot.fill.fore_color.rgb = theme["accent"]
+                    
+                    label_w = step - Inches(0.1)
+                    p_yr_tf = slide.shapes.add_textbox(cx - label_w/2, axis_y - Inches(1.2), label_w, Inches(1.0)).text_frame
+                    p_yr_tf.word_wrap = True 
+                    set_p_format(p_yr_tf.paragraphs[0], str(node[0]), get_dynamic_pt(node[0], 14), True, theme["title"], PP_ALIGN.CENTER)
+                    
+                    box_w = step - Inches(0.3)
+                    box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, cx - box_w/2, axis_y + Inches(0.3), box_w, avail_h - Inches(1.4))
+                    box.fill.solid(); box.fill.fore_color.rgb = theme["card_bg"]; box.line.color.rgb = theme["accent"]
+                    
+                    tf = box.text_frame
+                    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
+                    content_txt = str(node[1]) if len(node)>1 else ""
+                    set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, theme["text"])
 
         elif s_type == 'chart':
-            sp = body_shape.element
-            sp.getparent().remove(sp) # Delete placeholder, inject Chart
             c_data_dict = s_info.get('chart_data', {})
             try:
                 clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
+                cw, tw = avail_w * 0.45, avail_w * 0.5
                 c_data = CategoryChartData()
                 c_data.categories = list(clean.keys())
                 c_data.add_series('Value', list(clean.values()))
-                slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, avail_left, avail_top, avail_w, avail_h, c_data)
-            except: pass
+                slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, content_left, content_top, cw, avail_h, c_data)
+            except: s_type = 'text'
 
-        elif s_type == 'text':
+        if s_type == 'text':
+            card_w = avail_w / 2 - Inches(0.2)
             domain = str(s_info.get('company_domain', '')).strip()
             img_path = f"temp_{i}.png"
             has_img = False
             
             if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
-            elif get_image_robust(str(s_info.get('image_prompt', 'business')), "business", img_path): has_img = True
+            elif get_image_robust(str(s_info.get('image_prompt', 'business management')), "business", img_path): has_img = True
+            
+            img_left = content_left if i % 2 == 0 else content_left + card_w + Inches(0.4)
+            text_left = content_left + card_w + Inches(0.4) if i % 2 == 0 else content_left
             
             if has_img:
-                half_w = int(avail_w * 0.5)
-                body_shape.width = half_w - Inches(0.2)
-                img_left = avail_left + half_w + Inches(0.2)
                 try: 
-                    slide.shapes.add_picture(img_path, img_left, avail_top, width=half_w - Inches(0.2))
+                    slide.shapes.add_picture(img_path, img_left, content_top, width=card_w)
                     os.remove(img_path)
-                except: pass
-            
-            # STRICT NATIVE INJECTION (PowerPoint will auto-fit and auto-bullet this!)
-            body_shape.text = "\n".join(bullets)
-            try:
-                for p in body_shape.text_frame.paragraphs:
-                    p.font.color.rgb = theme["text"]
-            except: pass
+                except: 
+                    card_w, text_left = avail_w, content_left
+            else: 
+                card_w, text_left = avail_w, content_left
 
-        # 4. Add Takeaway Banner
+            card_h = avail_h / max(len(bullets), 1)
+            for idx, b in enumerate(bullets):
+                shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, text_left, content_top + idx * card_h, card_w, card_h - Inches(0.15))
+                shape.fill.solid(); shape.fill.fore_color.rgb = theme["card_bg"]; shape.line.color.rgb = theme["card_border"]
+                
+                tf = shape.text_frame
+                tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
+                set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, theme["text"])
+
         if takeaway:
-            ban_top = prs.slide_height - Inches(0.8)
-            ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), ban_top, prs.slide_width - Inches(1.0), Inches(0.5))
-            ban.fill.solid()
-            ban.fill.fore_color.rgb = theme["card_border"]
-            ban.line.fill.background = None
+            ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, content_left, prs.slide_height - Inches(0.8), avail_w, Inches(0.5))
+            ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
             
             tf = ban.text_frame
-            p = tf.paragraphs[0]
-            p.text = f"TAKEAWAY: {takeaway}"
-            p.font.color.rgb = theme["title"]
-            p.font.bold = True
-            p.alignment = PP_ALIGN.CENTER
+            tf.margin_left = tf.margin_right = Inches(0.1)
+            set_p_format(tf.paragraphs[0], f"TAKEAWAY: {takeaway}", get_dynamic_pt(takeaway, 16), True, theme["title"], PP_ALIGN.CENTER)
 
-    out = io.BytesIO()
-    prs.save(out)
-    out.seek(0)
+    out = io.BytesIO(); prs.save(out); out.seek(0)
     return out
 
 def main():
@@ -383,7 +431,7 @@ def main():
         url_input = st.text_input("Enter Web Article URL")
         
     if (uf or url_input) and st.button("1. Analyze Content", type="primary"):
-        with st.status("Processing multi-agent pipeline...") as status:
+        with st.status("Analyzing source content...") as status:
             try:
                 chunks = []
                 if uf and uf.name.endswith('.docx'):
@@ -402,9 +450,9 @@ def main():
                 if js and len(js.get('slides', [])) > 0:
                     st.session_state.slide_data = js
                     st.session_state.ppt_buffer = None
-                    status.update(label="Pipeline execution complete.", state="complete")
+                    status.update(label="Analysis complete. Please review the slides below.", state="complete")
                 else: 
-                    status.update(label="Agents failed to extract structured data.", state="error")
+                    status.update(label="System could not extract structured data.", state="error")
             except Exception as e: 
                 status.update(label=f"System Error: {str(e)}", state="error")
 
