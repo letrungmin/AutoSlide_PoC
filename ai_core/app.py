@@ -194,8 +194,7 @@ def add_editable_stock_tag(slide, x, y, stock_code, trend):
     tf.margin_left = tf.margin_right = Inches(0.05)
     set_p_format(tf.paragraphs[0], stock_code.upper(), get_dynamic_pt(stock_code, 12), True, RGBColor(255, 255, 255), PP_ALIGN.CENTER)
 
-def render_pptx_clean(slide_data, template_source, report_title, status_container):
-    status_container.write("Rendering Slides...")
+def render_pptx_clean(slide_data, template_source, report_title):
     prs = Presentation(template_source)
     SAFE_LEFT, SAFE_TOP = Inches(0.5), Inches(0.8)
     AVAIL_W = prs.slide_width - Inches(1.0)
@@ -333,6 +332,13 @@ def render_pptx_clean(slide_data, template_source, report_title, status_containe
 def main():
     st.title("Universal AI Presentation Generator")
     
+    if "slide_data" not in st.session_state:
+        st.session_state.slide_data = None
+    if "edited_data" not in st.session_state:
+        st.session_state.edited_data = None
+    if "ppt_buffer" not in st.session_state:
+        st.session_state.ppt_buffer = None
+
     with st.sidebar:
         st.header("Report Configuration")
         report_title = st.text_input("Cover Title:", "ANALYSIS REPORT")
@@ -356,28 +362,59 @@ def main():
         
     uf = st.file_uploader("Upload Word Document (.docx)", type="docx")
     
-    if uf and st.button("Generate Presentation", type="primary"):
-        with st.status("AI is analyzing the document...") as status:
-            try:
-                js = get_slide_json_from_llama3(uf, status)
-                if js and len(js.get('slides', [])) > 0:
-                    status.update(label="Packaging PowerPoint slides...")
-                    
-                    template_source = custom_template if custom_template else selected_template_path
-                    
-                    buf = render_pptx_clean(js, template_source, report_title, status)
-                    status.update(label="Complete! You can download the file now.", state="complete")
-                    
-                    st.download_button(
-                        label="Download PowerPoint File", 
-                        data=buf, 
-                        file_name="Universal_Presentation.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
-                else: 
-                    status.update(label="Error: System could not extract data from this document.", state="error")
-            except Exception as e: 
-                status.update(label=f"System Error: {str(e)}", state="error")
+    if uf:
+        if st.button("1. Analyze Document", type="primary"):
+            with st.status("AI is analyzing the document...") as status:
+                try:
+                    js = get_slide_json_from_llama3(uf, status)
+                    if js and len(js.get('slides', [])) > 0:
+                        st.session_state.slide_data = js
+                        st.session_state.ppt_buffer = None
+                        status.update(label="Analysis complete! Please review the slides below.", state="complete")
+                    else: 
+                        status.update(label="System could not extract data from this document.", state="error")
+                except Exception as e: 
+                    status.update(label=f"System Error: {str(e)}", state="error")
+
+    if st.session_state.slide_data:
+        st.markdown("---")
+        st.subheader("2. Review & Edit Content")
+        
+        edited_slides = []
+        for i, slide in enumerate(st.session_state.slide_data['slides']):
+            with st.expander(f"Slide {i+1}: {slide.get('title', 'Untitled')}", expanded=False):
+                new_title = st.text_input("Title", slide.get('title', ''), key=f"title_{i}")
+                new_takeaway = st.text_input("Takeaway", slide.get('takeaway', ''), key=f"takeaway_{i}")
+                
+                bullets_str = "\n".join(slide.get('bullets', []))
+                new_bullets_str = st.text_area("Bullets (one per line)", bullets_str, height=120, key=f"bullets_{i}")
+                
+                new_slide = slide.copy()
+                new_slide['title'] = new_title
+                new_slide['takeaway'] = new_takeaway
+                new_slide['bullets'] = [b.strip() for b in new_bullets_str.split("\n") if b.strip()]
+                edited_slides.append(new_slide)
+                
+        st.session_state.edited_data = {"slides": edited_slides}
+
+        if st.button("3. Generate PowerPoint"):
+            template_source = custom_template if custom_template else selected_template_path
+            with st.spinner("Rendering slides..."):
+                try:
+                    buf = render_pptx_clean(st.session_state.edited_data, template_source, report_title)
+                    st.session_state.ppt_buffer = buf
+                    st.success("PowerPoint generated successfully!")
+                except Exception as e:
+                    st.error(f"Render Error: {str(e)}")
+
+    if st.session_state.ppt_buffer:
+        st.download_button(
+            label="Download PowerPoint File", 
+            data=st.session_state.ppt_buffer, 
+            file_name="Universal_Presentation.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type="primary"
+        )
 
 if __name__ == "__main__":
     main()
