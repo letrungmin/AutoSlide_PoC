@@ -13,7 +13,7 @@ from openai import OpenAI
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, PP_PLACEHOLDER
 from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
@@ -173,11 +173,6 @@ def get_slide_json_from_llama3(chunks, status_container):
                     
     return {"slides": all_slides}
 
-def clear_placeholders(slide):
-    for shape in slide.placeholders:
-        sp = shape.element
-        sp.getparent().remove(sp)
-
 def get_dynamic_pt(text, default_size):
     length = len(str(text))
     if length < 30: return Pt(default_size + 4)
@@ -210,135 +205,167 @@ def add_editable_stock_tag(slide, x, y, stock_code, trend, theme):
 
 def render_pptx_clean(slide_data, template_source, report_title, theme):
     prs = Presentation(template_source)
-    SAFE_LEFT, SAFE_TOP = Inches(0.5), Inches(0.8)
-    AVAIL_W = prs.slide_width - Inches(1.0)
     
     try:
-        ts = prs.slides.add_slide(prs.slide_layouts[6])
-        clear_placeholders(ts) 
-        set_p_format(ts.shapes.add_textbox(SAFE_LEFT, Inches(3.0), AVAIL_W, Inches(2.0)).text_frame.paragraphs[0], report_title.upper(), Pt(54), True, theme["title"], PP_ALIGN.CENTER)
-    except: pass
+        cover_slide = prs.slides.add_slide(prs.slide_layouts[0])
+        for shape in cover_slide.placeholders:
+            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
+                shape.text = report_title.upper()
+                if shape.has_text_frame and shape.text_frame.paragraphs:
+                    shape.text_frame.paragraphs[0].font.color.rgb = theme["title"]
+    except Exception:
+        pass
 
     slides_list = slide_data.get('slides', slide_data) if isinstance(slide_data, dict) else slide_data
 
     for i, s_info in enumerate(slides_list):
         if not isinstance(s_info, dict): continue
-        try:
-            s_type = str(s_info.get('type') or 'text')
-            if s_type not in ['table', 'chart']: s_type = 'text'
+        
+        s_type = str(s_info.get('type') or 'text')
+        if s_type not in ['table', 'chart']: s_type = 'text'
+            
+        title = str(s_info.get('title') or 'Content Slide')
+        takeaway = str(s_info.get('takeaway') or '')
+        
+        raw_bullets = [str(b).strip() for b in (s_info.get('bullets') or []) if str(b).strip()]
+        cleaned_bullets = []
+        for b in raw_bullets:
+            if len(b) < 25 and len(cleaned_bullets) > 0:
+                cleaned_bullets[-1] += " " + b
+            else:
+                cleaned_bullets.append(b)
                 
-            title = str(s_info.get('title') or 'Content Slide')
-            takeaway = str(s_info.get('takeaway') or '')
-            
-            raw_bullets = [str(b).strip() for b in (s_info.get('bullets') or []) if str(b).strip()]
-            cleaned_bullets = []
-            for b in raw_bullets:
-                if len(b) < 25 and len(cleaned_bullets) > 0:
-                    cleaned_bullets[-1] += " " + b
-                else:
-                    cleaned_bullets.append(b)
-                    
-            if not cleaned_bullets: 
-                cleaned_bullets = ["System is summarizing data...", "Please verify with the original document."]
-            bullets = cleaned_bullets
-            
-            p_stocks = s_info.get('positive_stocks') or []
-            n_stocks = s_info.get('negative_stocks') or []
+        if not cleaned_bullets: 
+            cleaned_bullets = ["System is summarizing data...", "Please verify with the original document."]
+        bullets = cleaned_bullets
+        
+        p_stocks = s_info.get('positive_stocks') or []
+        n_stocks = s_info.get('negative_stocks') or []
 
-            try: slide = prs.slides.add_slide(prs.slide_layouts[6]); clear_placeholders(slide) 
-            except: slide = prs.slides.add_slide(prs.slide_layouts[1]); clear_placeholders(slide)
+        layout_idx = 1 if len(prs.slide_layouts) > 1 else 0
+        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
-            p_title = slide.shapes.add_textbox(SAFE_LEFT, SAFE_TOP, AVAIL_W, Inches(0.8)).text_frame
+        title_shape = None
+        body_shape = None
+        
+        for shape in slide.placeholders:
+            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
+                title_shape = shape
+            elif shape.placeholder_format.type in [PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT]:
+                body_shape = shape
+
+        if title_shape:
+            title_shape.text = title.upper()
+            if title_shape.has_text_frame and title_shape.text_frame.paragraphs:
+                title_shape.text_frame.paragraphs[0].font.color.rgb = theme["title"]
+        else:
+            p_title = slide.shapes.add_textbox(Inches(0.5), Inches(0.8), prs.slide_width - Inches(1.0), Inches(0.8)).text_frame
             set_p_format(p_title.paragraphs[0], title.upper(), get_dynamic_pt(title, 32), True, theme["title"])
+
+        content_left = Inches(0.5)
+        content_top = Inches(1.8)
+        avail_w = prs.slide_width - Inches(1.0)
+        avail_h = prs.slide_height - Inches(2.8)
+
+        if body_shape:
+            content_left = body_shape.left
+            content_top = body_shape.top
+            avail_w = body_shape.width
+            avail_h = body_shape.height
+            sp = body_shape.element
+            sp.getparent().remove(sp)
+
+        curr_x = content_left
+        for st_code in p_stocks:
+            add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up', theme)
+            curr_x += Inches(1.2)
+        for st_code in n_stocks:
+            add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'down', theme)
+            curr_x += Inches(1.2)
             
-            content_top, avail_h = Inches(1.8), prs.slide_height - Inches(2.8)
-            
-            curr_x = SAFE_LEFT
-            for st_code in p_stocks:
-                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up', theme)
-                curr_x += Inches(1.2)
-            for st_code in n_stocks:
-                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'down', theme)
-                curr_x += Inches(1.2)
+        if p_stocks or n_stocks: 
+            content_top += Inches(0.6) 
+            avail_h -= Inches(0.6)
+
+        if s_type == 'table':
+            t_data = s_info.get('table_data', [])
+            nodes = t_data[1:] if len(t_data) > 1 else t_data
+            if not nodes: 
+                s_type = 'text'
+            else:
+                step = avail_w / max(len(nodes), 1)
+                axis_y = content_top + Inches(1.0)
                 
-            if p_stocks or n_stocks: 
-                content_top += Inches(0.6) 
-                avail_h -= Inches(0.6)
-
-            if s_type == 'table':
-                t_data = s_info.get('table_data', [])
-                nodes = t_data[1:] if len(t_data) > 1 else t_data
-                if not nodes: 
-                    s_type = 'text'
-                else:
-                    step = AVAIL_W / max(len(nodes), 1)
-                    axis_y = content_top + Inches(1.0)
-                    
-                    line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, SAFE_LEFT, axis_y, AVAIL_W, Inches(0.05))
-                    line.fill.solid(); line.fill.fore_color.rgb = theme["accent"]
-                    
-                    for n_idx, node in enumerate(nodes):
-                        cx = SAFE_LEFT + (n_idx * step) + (step / 2)
-                        dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, cx - Inches(0.12), axis_y - Inches(0.1), Inches(0.24), Inches(0.24))
-                        dot.fill.solid(); dot.fill.fore_color.rgb = theme["accent"]
-                        
-                        label_w = step - Inches(0.1)
-                        p_yr_tf = slide.shapes.add_textbox(cx - label_w/2, axis_y - Inches(1.2), label_w, Inches(1.0)).text_frame
-                        p_yr_tf.word_wrap = True 
-                        set_p_format(p_yr_tf.paragraphs[0], str(node[0]), get_dynamic_pt(node[0], 14), True, theme["title"], PP_ALIGN.CENTER)
-                        
-                        box_w = step - Inches(0.3)
-                        box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, cx - box_w/2, axis_y + Inches(0.3), box_w, avail_h - Inches(1.4))
-                        box.fill.solid(); box.fill.fore_color.rgb = theme["card_bg"]; box.line.color.rgb = theme["accent"]
-                        
-                        tf = box.text_frame
-                        tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
-                        content_txt = str(node[1]) if len(node)>1 else ""
-                        set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, theme["text"])
-
-            elif s_type == 'chart':
-                c_data_dict = s_info.get('chart_data', {})
-                try:
-                    clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
-                    cw, tw = AVAIL_W * 0.45, AVAIL_W * 0.5
-                    c_data = CategoryChartData()
-                    c_data.categories = list(clean.keys())
-                    c_data.add_series('Value', list(clean.values()))
-                    slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, SAFE_LEFT, content_top, cw, avail_h, c_data)
-                except: s_type = 'text'
-
-            if s_type == 'text':
-                card_w = AVAIL_W / 2 - Inches(0.2)
-                domain = str(s_info.get('company_domain', '')).strip()
-                img_path = f"temp_{i}.png"; has_img = False
+                line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, content_left, axis_y, avail_w, Inches(0.05))
+                line.fill.solid(); line.fill.fore_color.rgb = theme["accent"]
                 
-                if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
-                elif get_image_robust(str(s_info.get('image_prompt', 'business management')), "business", img_path): has_img = True
-                
-                img_left, text_left = (SAFE_LEFT, SAFE_LEFT + card_w + Inches(0.4)) if i % 2 == 0 else (SAFE_LEFT + card_w + Inches(0.4), SAFE_LEFT)
-                if has_img:
-                    try: slide.shapes.add_picture(img_path, img_left, content_top, width=card_w); os.remove(img_path)
-                    except: card_w, text_left = AVAIL_W, SAFE_LEFT
-                else: card_w, text_left = AVAIL_W, SAFE_LEFT
-
-                card_h = avail_h / max(len(bullets), 1)
-                for idx, b in enumerate(bullets):
-                    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, text_left, content_top + idx * card_h, card_w, card_h - Inches(0.15))
-                    shape.fill.solid(); shape.fill.fore_color.rgb = theme["card_bg"]; shape.line.color.rgb = theme["card_border"]
+                for n_idx, node in enumerate(nodes):
+                    cx = content_left + (n_idx * step) + (step / 2)
+                    dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, cx - Inches(0.12), axis_y - Inches(0.1), Inches(0.24), Inches(0.24))
+                    dot.fill.solid(); dot.fill.fore_color.rgb = theme["accent"]
                     
-                    tf = shape.text_frame
+                    label_w = step - Inches(0.1)
+                    p_yr_tf = slide.shapes.add_textbox(cx - label_w/2, axis_y - Inches(1.2), label_w, Inches(1.0)).text_frame
+                    p_yr_tf.word_wrap = True 
+                    set_p_format(p_yr_tf.paragraphs[0], str(node[0]), get_dynamic_pt(node[0], 14), True, theme["title"], PP_ALIGN.CENTER)
+                    
+                    box_w = step - Inches(0.3)
+                    box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, cx - box_w/2, axis_y + Inches(0.3), box_w, avail_h - Inches(1.4))
+                    box.fill.solid(); box.fill.fore_color.rgb = theme["card_bg"]; box.line.color.rgb = theme["accent"]
+                    
+                    tf = box.text_frame
                     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
-                    set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, theme["text"])
+                    content_txt = str(node[1]) if len(node)>1 else ""
+                    set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, theme["text"])
 
-            if takeaway:
-                ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, SAFE_LEFT, prs.slide_height - Inches(0.8), AVAIL_W, Inches(0.5))
-                ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
+        elif s_type == 'chart':
+            c_data_dict = s_info.get('chart_data', {})
+            try:
+                clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
+                cw, tw = avail_w * 0.45, avail_w * 0.5
+                c_data = CategoryChartData()
+                c_data.categories = list(clean.keys())
+                c_data.add_series('Value', list(clean.values()))
+                slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, content_left, content_top, cw, avail_h, c_data)
+            except: s_type = 'text'
+
+        if s_type == 'text':
+            card_w = avail_w / 2 - Inches(0.2)
+            domain = str(s_info.get('company_domain', '')).strip()
+            img_path = f"temp_{i}.png"
+            has_img = False
+            
+            if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
+            elif get_image_robust(str(s_info.get('image_prompt', 'business management')), "business", img_path): has_img = True
+            
+            img_left = content_left if i % 2 == 0 else content_left + card_w + Inches(0.4)
+            text_left = content_left + card_w + Inches(0.4) if i % 2 == 0 else content_left
+            
+            if has_img:
+                try: 
+                    slide.shapes.add_picture(img_path, img_left, content_top, width=card_w)
+                    os.remove(img_path)
+                except: 
+                    card_w, text_left = avail_w, content_left
+            else: 
+                card_w, text_left = avail_w, content_left
+
+            card_h = avail_h / max(len(bullets), 1)
+            for idx, b in enumerate(bullets):
+                shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, text_left, content_top + idx * card_h, card_w, card_h - Inches(0.15))
+                shape.fill.solid(); shape.fill.fore_color.rgb = theme["card_bg"]; shape.line.color.rgb = theme["card_border"]
                 
-                tf = ban.text_frame
-                tf.margin_left = tf.margin_right = Inches(0.1)
-                set_p_format(tf.paragraphs[0], f"TAKEAWAY: {takeaway}", get_dynamic_pt(takeaway, 16), True, theme["title"], PP_ALIGN.CENTER)
+                tf = shape.text_frame
+                tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
+                set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, theme["text"])
 
-        except Exception as e: continue
+        if takeaway:
+            ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, content_left, prs.slide_height - Inches(0.8), avail_w, Inches(0.5))
+            ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
+            
+            tf = ban.text_frame
+            tf.margin_left = tf.margin_right = Inches(0.1)
+            set_p_format(tf.paragraphs[0], f"TAKEAWAY: {takeaway}", get_dynamic_pt(takeaway, 16), True, theme["title"], PP_ALIGN.CENTER)
 
     out = io.BytesIO(); prs.save(out); out.seek(0)
     return out
