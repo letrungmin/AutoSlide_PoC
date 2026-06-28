@@ -2,7 +2,6 @@ import streamlit as st
 import docx
 import json
 import requests
-import time
 import os
 import io
 import urllib.parse
@@ -17,10 +16,7 @@ from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
 
-# ==========================================
-# 1. CẤU HÌNH HỆ THỐNG
-# ==========================================
-st.set_page_config(page_title="Universal AI Report Generator", layout="wide")
+st.set_page_config(page_title="Universal AI Presentation Generator", layout="wide")
 
 load_dotenv()
 
@@ -32,7 +28,7 @@ else:
     PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
 if not LLAMA3_API_KEY:
-    st.error("🚨 Ứng dụng đang thiếu API Key! Vui lòng vào Cài đặt (Settings) -> Secrets trên Streamlit Cloud để nhập GROQ_API_KEY.")
+    st.error("API Key is missing. Please configure GROQ_API_KEY in Streamlit Secrets.")
     st.stop()
 
 LLAMA3_BASE_URL = "https://api.groq.com/openai/v1" 
@@ -47,11 +43,7 @@ THEME = {
     "accent": RGBColor(0, 153, 117),      
     "chart": [RGBColor(0, 153, 117), RGBColor(212, 175, 55), RGBColor(0, 51, 102), RGBColor(148, 163, 184)]
 }
-client = OpenAI(api_key=LLAMA3_API_KEY, base_url=LLAMA3_BASE_URL)
 
-# ==========================================
-# 2. KIẾN TRÚC LẤY ẢNH VÀ LOGO
-# ==========================================
 def download_company_logo(domain, filepath):
     try:
         res = requests.get(f"https://logo.clearbit.com/{domain}?size=800", timeout=10)
@@ -88,9 +80,6 @@ def get_image_robust(prompt, keyword, filepath):
     if generate_ai_image(prompt, filepath): return True
     return download_image_pexels(keyword, filepath)
 
-# ==========================================
-# 3. LÕI AI: ĐỌC WORD VÀ ÉP KHUÔN JSON
-# ==========================================
 def get_semantic_chunks_from_docx(file_stream, max_words=600):
     file_stream.seek(0) 
     doc = docx.Document(file_stream)
@@ -111,37 +100,37 @@ def get_slide_json_from_llama3(file_stream, status_container):
     all_slides = []
     
     system_prompt = """
-    Chuyển văn bản thành JSON Presentation. TUYỆT ĐỐI GIỮ TIẾNG VIỆT CÓ DẤU.
-    BẮT BUỘC TRẢ VỀ JSON THEO ĐÚNG MẪU NÀY:
+    Convert text into JSON Presentation. MUST KEEP DIACRITICS IF ANY.
+    MUST RETURN JSON IN THIS EXACT FORMAT:
     {
         "slides": [
             {
-                "title": "Tiêu đề Slide",
+                "title": "Slide Title",
                 "type": "text", 
                 "company_domain": "",
-                "image_prompt": "10 từ tiếng anh miêu tả",
-                "takeaway": "Một câu chốt ngắn gọn",
+                "image_prompt": "10 english words description",
+                "takeaway": "Short concluding sentence",
                 "positive_stocks": [],
                 "negative_stocks": [],
-                "bullets": ["Ý trọn vẹn 1", "Ý trọn vẹn 2", "Ý trọn vẹn 3"],
+                "bullets": ["Complete idea 1", "Complete idea 2", "Complete idea 3"],
                 "table_data": [],
                 "chart_data": {}
             }
         ]
     }
     
-    QUY TẮC SỐNG CÒN:
-    1. PHÂN LỚP TYPE: 
-       - Lộ Trình/Giai đoạn/Kế hoạch năm -> "type": "table", "table_data": [["Mốc thời gian", "Sự kiện"]] (Mốc thời gian ghi siêu ngắn).
-       - Tỷ trọng/% -> "type": "chart", "chart_data": {"Mục 1": 60, "Mục 2": 40}
-       - Còn lại BẮT BUỘC trả về -> "type": "text"
-    2. CHỐNG RỖNG & NGẮT CÂU: 
-       - HÃY TỰ SUY LUẬN VÀ TÓM TẮT. TUYỆT ĐỐI KHÔNG ĐỂ MẢNG BULLETS RỖNG [].
-       - TUYỆT ĐỐI KHÔNG NGẮT CÂU GIỮA CHỪNG. Mỗi phần tử trong mảng 'bullets' phải là một ý nghĩa trọn vẹn.
+    RULES:
+    1. TYPE CLASSIFICATION: 
+       - Roadmap/Stages/Timeline -> "type": "table", "table_data": [["Time", "Event"]]
+       - Proportions/% -> "type": "chart", "chart_data": {"Item 1": 60, "Item 2": 40}
+       - Others MUST return -> "type": "text"
+    2. NO EMPTY BULLETS & NO INCOMPLETE SENTENCES: 
+       - SUMMARIZE LOGICALLY. NEVER LEAVE 'bullets' ARRAY EMPTY [].
+       - NEVER CUT OFF SENTENCES. Each element in 'bullets' must be a complete idea.
     """
     
     for i, chunk in enumerate(chunks):
-        status_container.write(f"Đang bóc tách dữ liệu JSON (Gói {i+1}/{len(chunks)})...")
+        status_container.write(f"Extracting JSON data (Batch {i+1}/{len(chunks)})...")
         retries = 3
         while retries > 0:
             try:
@@ -166,13 +155,10 @@ def get_slide_json_from_llama3(file_stream, status_container):
             except Exception as e:
                 retries -= 1
                 if retries == 0: 
-                    status_container.error(f"Lỗi bóc tách JSON ở gói {i+1}: {e}")
+                    status_container.error(f"JSON extraction error at batch {i+1}: {e}")
                     
     return {"slides": all_slides}
 
-# ==========================================
-# 4. CÁC HÀM HELPER VẼ PPTX
-# ==========================================
 def clear_placeholders(slide):
     for shape in slide.placeholders:
         sp = shape.element
@@ -208,17 +194,13 @@ def add_editable_stock_tag(slide, x, y, stock_code, trend):
     tf.margin_left = tf.margin_right = Inches(0.05)
     set_p_format(tf.paragraphs[0], stock_code.upper(), get_dynamic_pt(stock_code, 12), True, RGBColor(255, 255, 255), PP_ALIGN.CENTER)
 
-# ==========================================
-# 5. RENDER PPTX CLEAN
-# ==========================================
-def render_pptx_clean(slide_data, template_path, report_title, status_container):
-    status_container.write("Đang Render Giao diện Chống tràn lề...")
-    prs = Presentation(template_path)
+def render_pptx_clean(slide_data, template_source, report_title, status_container):
+    status_container.write("Rendering Slides...")
+    prs = Presentation(template_source)
     SAFE_LEFT, SAFE_TOP = Inches(0.5), Inches(0.8)
     AVAIL_W = prs.slide_width - Inches(1.0)
     
     try:
-        # TẠO TRANG BÌA VỚI TÊN ĐỘNG
         ts = prs.slides.add_slide(prs.slide_layouts[6])
         clear_placeholders(ts) 
         set_p_format(ts.shapes.add_textbox(SAFE_LEFT, Inches(3.0), AVAIL_W, Inches(2.0)).text_frame.paragraphs[0], report_title.upper(), Pt(54), True, THEME["title"], PP_ALIGN.CENTER)
@@ -230,24 +212,21 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
         if not isinstance(s_info, dict): continue
         try:
             s_type = str(s_info.get('type') or 'text')
-            # Loại bỏ hoàn toàn layout 'grid', ép về 'text'
             if s_type not in ['table', 'chart']: s_type = 'text'
                 
-            title = str(s_info.get('title') or 'Slide Nội Dung')
+            title = str(s_info.get('title') or 'Content Slide')
             takeaway = str(s_info.get('takeaway') or '')
             
-            # THUẬT TOÁN GOM RÁC (AUTO-MERGE BULLETS)
             raw_bullets = [str(b).strip() for b in (s_info.get('bullets') or []) if str(b).strip()]
             cleaned_bullets = []
             for b in raw_bullets:
-                # Nếu câu nhỏ hơn 25 ký tự và không phải là câu đầu tiên -> Nối vào câu trước đó
                 if len(b) < 25 and len(cleaned_bullets) > 0:
                     cleaned_bullets[-1] += " " + b
                 else:
                     cleaned_bullets.append(b)
                     
             if not cleaned_bullets: 
-                cleaned_bullets = ["Hệ thống đang tổng hợp dữ liệu...", "Vui lòng đối chiếu với bản gốc tài liệu."]
+                cleaned_bullets = ["System is summarizing data...", "Please verify with the original document."]
             bullets = cleaned_bullets
             
             p_stocks = s_info.get('positive_stocks') or []
@@ -256,13 +235,11 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
             try: slide = prs.slides.add_slide(prs.slide_layouts[6]); clear_placeholders(slide) 
             except: slide = prs.slides.add_slide(prs.slide_layouts[1]); clear_placeholders(slide)
 
-            # Vẽ Tiêu đề
             p_title = slide.shapes.add_textbox(SAFE_LEFT, SAFE_TOP, AVAIL_W, Inches(0.8)).text_frame
             set_p_format(p_title.paragraphs[0], title.upper(), get_dynamic_pt(title, 32), True, THEME["title"])
             
             content_top, avail_h = Inches(1.8), prs.slide_height - Inches(2.8)
             
-            # Vẽ Thẻ Cổ Phiếu (Nếu có)
             curr_x = SAFE_LEFT
             for st_code in p_stocks:
                 add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up')
@@ -275,7 +252,6 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
                 content_top += Inches(0.6) 
                 avail_h -= Inches(0.6)
 
-            # RENDER DẠNG TABLE (TIMELINE)
             if s_type == 'table':
                 t_data = s_info.get('table_data', [])
                 nodes = t_data[1:] if len(t_data) > 1 else t_data
@@ -307,7 +283,6 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
                         content_txt = str(node[1]) if len(node)>1 else ""
                         set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, THEME["text"])
 
-            # RENDER DẠNG BIỂU ĐỒ (CHART)
             elif s_type == 'chart':
                 c_data_dict = s_info.get('chart_data', {})
                 try:
@@ -319,13 +294,11 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
                     slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, SAFE_LEFT, content_top, cw, avail_h, c_data)
                 except: s_type = 'text'
 
-            # RENDER DẠNG DANH SÁCH (VERTICAL TEXT LAYOUT - ĐÃ THAY THẾ GRID)
             if s_type == 'text':
                 card_w = AVAIL_W / 2 - Inches(0.2)
                 domain = str(s_info.get('company_domain', '')).strip()
                 img_path = f"temp_{i}.png"; has_img = False
                 
-                # Logic Ảnh minh hoạ
                 if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
                 elif get_image_robust(str(s_info.get('image_prompt', 'business management')), "business", img_path): has_img = True
                 
@@ -335,7 +308,6 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
                     except: card_w, text_left = AVAIL_W, SAFE_LEFT
                 else: card_w, text_left = AVAIL_W, SAFE_LEFT
 
-                # Vẽ danh sách dọc tự động giãn cách
                 card_h = avail_h / max(len(bullets), 1)
                 for idx, b in enumerate(bullets):
                     shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, text_left, content_top + idx * card_h, card_w, card_h - Inches(0.15))
@@ -345,7 +317,6 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
                     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
                     set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, THEME["text"])
 
-            # Vẽ Banner Takeaway dưới cùng
             if takeaway:
                 ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, SAFE_LEFT, prs.slide_height - Inches(0.8), AVAIL_W, Inches(0.5))
                 ban.fill.solid(); ban.fill.fore_color.rgb = THEME["card_border"]; ban.line.fill.background = None
@@ -359,39 +330,54 @@ def render_pptx_clean(slide_data, template_path, report_title, status_container)
     out = io.BytesIO(); prs.save(out); out.seek(0)
     return out
 
-# ==========================================
-# 6. KHỞI CHẠY GIAO DIỆN STREAMLIT
-# ==========================================
 def main():
-    st.title("Universal AI Presentation Generator 🚀")
+    st.title("Universal AI Presentation Generator")
     
     with st.sidebar:
-        st.header("Cấu hình Báo Cáo")
-        report_title = st.text_input("Tên Trang Bìa:", "BÁO CÁO PHÂN TÍCH")
-        tpl = st.text_input("Đường dẫn Template:", "ai_core/templates/template_cong_ty_moi.pptx")
-        st.info("Mẹo: Hãy mở file template .pptx của bạn lên, vào thẻ View -> Slide Master và xóa hết các logo/text cũ để làm sạch phôi trắng nhé.")
+        st.header("Report Configuration")
+        report_title = st.text_input("Cover Title:", "ANALYSIS REPORT")
         
-    uf = st.file_uploader("Tải lên tài liệu Word (.docx)", type="docx")
+        template_dir = "ai_core/templates"
+        available_templates = {}
+        if os.path.exists(template_dir):
+            for file in os.listdir(template_dir):
+                if file.endswith(".pptx"):
+                    display_name = file.replace(".pptx", "").replace("_", " ").title()
+                    available_templates[display_name] = os.path.join(template_dir, file)
+        
+        if not available_templates:
+            available_templates["Default Template"] = "ai_core/templates/template_cong_ty_moi.pptx"
+            
+        selected_template_name = st.selectbox("Select System Template:", list(available_templates.keys()))
+        selected_template_path = available_templates[selected_template_name]
+        
+        st.markdown("---")
+        custom_template = st.file_uploader("Or upload your custom template (.pptx)", type="pptx")
+        
+    uf = st.file_uploader("Upload Word Document (.docx)", type="docx")
     
-    if uf and st.button("Tạo Báo Cáo PPTX", type="primary"):
-        with st.status("Hệ thống AI đang phân tích tài liệu...") as status:
+    if uf and st.button("Generate Presentation", type="primary"):
+        with st.status("AI is analyzing the document...") as status:
             try:
                 js = get_slide_json_from_llama3(uf, status)
                 if js and len(js.get('slides', [])) > 0:
-                    status.update(label="Đang đóng gói Slide PowerPoint...")
-                    buf = render_pptx_clean(js, tpl, report_title, status)
-                    status.update(label="Hoàn tất! Bạn có thể tải file ngay.", state="complete")
+                    status.update(label="Packaging PowerPoint slides...")
+                    
+                    template_source = custom_template if custom_template else selected_template_path
+                    
+                    buf = render_pptx_clean(js, template_source, report_title, status)
+                    status.update(label="Complete! You can download the file now.", state="complete")
                     
                     st.download_button(
-                        label="📥 Tải File PowerPoint", 
+                        label="Download PowerPoint File", 
                         data=buf, 
                         file_name="Universal_Presentation.pptx",
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
                     )
                 else: 
-                    status.update(label="Lỗi: Hệ thống không thể trích xuất dữ liệu từ tài liệu này.", state="error")
+                    status.update(label="Error: System could not extract data from this document.", state="error")
             except Exception as e: 
-                status.update(label=f"Lỗi Hệ thống: {str(e)}", state="error")
+                status.update(label=f"System Error: {str(e)}", state="error")
 
 if __name__ == "__main__":
     main()
