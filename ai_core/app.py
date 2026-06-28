@@ -36,15 +36,9 @@ if not LLAMA3_API_KEY:
 LLAMA3_BASE_URL = "https://api.groq.com/openai/v1" 
 client = OpenAI(api_key=LLAMA3_API_KEY, base_url=LLAMA3_BASE_URL)
 
-THEME = {
-    "bg": RGBColor(255, 255, 255),        
-    "title": RGBColor(0, 51, 102),        
-    "card_bg": RGBColor(248, 250, 252),   
-    "card_border": RGBColor(212, 175, 55),
-    "text": RGBColor(51, 65, 85),         
-    "accent": RGBColor(0, 153, 117),      
-    "chart": [RGBColor(0, 153, 117), RGBColor(212, 175, 55), RGBColor(0, 51, 102), RGBColor(148, 163, 184)]
-}
+def hex_to_rgb_color(hex_str):
+    hex_str = hex_str.lstrip('#')
+    return RGBColor(int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))
 
 def download_company_logo(domain, filepath):
     try:
@@ -106,7 +100,7 @@ def get_semantic_chunks_from_pdf(file_stream, max_words=600):
     return chunk_text(text, max_words)
 
 def get_semantic_chunks_from_url(url, max_words=600):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     res = requests.get(url, headers=headers, timeout=15)
     res.raise_for_status()
     soup = BeautifulSoup(res.content, "html.parser")
@@ -205,16 +199,16 @@ def set_p_format(paragraph, text, font_size, bold=False, color_rgb=None, alignme
         tf.word_wrap = True
         tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
 
-def add_editable_stock_tag(slide, x, y, stock_code, trend):
+def add_editable_stock_tag(slide, x, y, stock_code, trend, theme):
     tag = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, Inches(1.1), Inches(0.4))
-    bg_color = THEME["accent"] if trend == 'up' else RGBColor(220, 38, 38)
+    bg_color = theme["accent"] if trend == 'up' else RGBColor(220, 38, 38)
     tag.fill.solid(); tag.fill.fore_color.rgb = bg_color; tag.line.fill.background = None
     
     tf = tag.text_frame
     tf.margin_left = tf.margin_right = Inches(0.05)
     set_p_format(tf.paragraphs[0], stock_code.upper(), get_dynamic_pt(stock_code, 12), True, RGBColor(255, 255, 255), PP_ALIGN.CENTER)
 
-def render_pptx_clean(slide_data, template_source, report_title):
+def render_pptx_clean(slide_data, template_source, report_title, theme):
     prs = Presentation(template_source)
     SAFE_LEFT, SAFE_TOP = Inches(0.5), Inches(0.8)
     AVAIL_W = prs.slide_width - Inches(1.0)
@@ -222,7 +216,7 @@ def render_pptx_clean(slide_data, template_source, report_title):
     try:
         ts = prs.slides.add_slide(prs.slide_layouts[6])
         clear_placeholders(ts) 
-        set_p_format(ts.shapes.add_textbox(SAFE_LEFT, Inches(3.0), AVAIL_W, Inches(2.0)).text_frame.paragraphs[0], report_title.upper(), Pt(54), True, THEME["title"], PP_ALIGN.CENTER)
+        set_p_format(ts.shapes.add_textbox(SAFE_LEFT, Inches(3.0), AVAIL_W, Inches(2.0)).text_frame.paragraphs[0], report_title.upper(), Pt(54), True, theme["title"], PP_ALIGN.CENTER)
     except: pass
 
     slides_list = slide_data.get('slides', slide_data) if isinstance(slide_data, dict) else slide_data
@@ -255,16 +249,16 @@ def render_pptx_clean(slide_data, template_source, report_title):
             except: slide = prs.slides.add_slide(prs.slide_layouts[1]); clear_placeholders(slide)
 
             p_title = slide.shapes.add_textbox(SAFE_LEFT, SAFE_TOP, AVAIL_W, Inches(0.8)).text_frame
-            set_p_format(p_title.paragraphs[0], title.upper(), get_dynamic_pt(title, 32), True, THEME["title"])
+            set_p_format(p_title.paragraphs[0], title.upper(), get_dynamic_pt(title, 32), True, theme["title"])
             
             content_top, avail_h = Inches(1.8), prs.slide_height - Inches(2.8)
             
             curr_x = SAFE_LEFT
             for st_code in p_stocks:
-                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up')
+                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'up', theme)
                 curr_x += Inches(1.2)
             for st_code in n_stocks:
-                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'down')
+                add_editable_stock_tag(slide, curr_x, content_top, str(st_code), 'down', theme)
                 curr_x += Inches(1.2)
                 
             if p_stocks or n_stocks: 
@@ -281,26 +275,26 @@ def render_pptx_clean(slide_data, template_source, report_title):
                     axis_y = content_top + Inches(1.0)
                     
                     line = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, SAFE_LEFT, axis_y, AVAIL_W, Inches(0.05))
-                    line.fill.solid(); line.fill.fore_color.rgb = THEME["accent"]
+                    line.fill.solid(); line.fill.fore_color.rgb = theme["accent"]
                     
                     for n_idx, node in enumerate(nodes):
                         cx = SAFE_LEFT + (n_idx * step) + (step / 2)
                         dot = slide.shapes.add_shape(MSO_SHAPE.OVAL, cx - Inches(0.12), axis_y - Inches(0.1), Inches(0.24), Inches(0.24))
-                        dot.fill.solid(); dot.fill.fore_color.rgb = THEME["accent"]
+                        dot.fill.solid(); dot.fill.fore_color.rgb = theme["accent"]
                         
                         label_w = step - Inches(0.1)
                         p_yr_tf = slide.shapes.add_textbox(cx - label_w/2, axis_y - Inches(1.2), label_w, Inches(1.0)).text_frame
                         p_yr_tf.word_wrap = True 
-                        set_p_format(p_yr_tf.paragraphs[0], str(node[0]), get_dynamic_pt(node[0], 14), True, THEME["title"], PP_ALIGN.CENTER)
+                        set_p_format(p_yr_tf.paragraphs[0], str(node[0]), get_dynamic_pt(node[0], 14), True, theme["title"], PP_ALIGN.CENTER)
                         
                         box_w = step - Inches(0.3)
                         box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, cx - box_w/2, axis_y + Inches(0.3), box_w, avail_h - Inches(1.4))
-                        box.fill.solid(); box.fill.fore_color.rgb = THEME["card_bg"]; box.line.color.rgb = THEME["accent"]
+                        box.fill.solid(); box.fill.fore_color.rgb = theme["card_bg"]; box.line.color.rgb = theme["accent"]
                         
                         tf = box.text_frame
                         tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
                         content_txt = str(node[1]) if len(node)>1 else ""
-                        set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, THEME["text"])
+                        set_p_format(tf.paragraphs[0], content_txt, get_dynamic_pt(content_txt, 14), None, theme["text"])
 
             elif s_type == 'chart':
                 c_data_dict = s_info.get('chart_data', {})
@@ -330,19 +324,19 @@ def render_pptx_clean(slide_data, template_source, report_title):
                 card_h = avail_h / max(len(bullets), 1)
                 for idx, b in enumerate(bullets):
                     shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, text_left, content_top + idx * card_h, card_w, card_h - Inches(0.15))
-                    shape.fill.solid(); shape.fill.fore_color.rgb = THEME["card_bg"]; shape.line.color.rgb = THEME["card_border"]
+                    shape.fill.solid(); shape.fill.fore_color.rgb = theme["card_bg"]; shape.line.color.rgb = theme["card_border"]
                     
                     tf = shape.text_frame
                     tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.1)
-                    set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, THEME["text"])
+                    set_p_format(tf.paragraphs[0], b, get_dynamic_pt(b, 16), None, theme["text"])
 
             if takeaway:
                 ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, SAFE_LEFT, prs.slide_height - Inches(0.8), AVAIL_W, Inches(0.5))
-                ban.fill.solid(); ban.fill.fore_color.rgb = THEME["card_border"]; ban.line.fill.background = None
+                ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
                 
                 tf = ban.text_frame
                 tf.margin_left = tf.margin_right = Inches(0.1)
-                set_p_format(tf.paragraphs[0], f"TAKEAWAY: {takeaway}", get_dynamic_pt(takeaway, 16), True, THEME["title"], PP_ALIGN.CENTER)
+                set_p_format(tf.paragraphs[0], f"TAKEAWAY: {takeaway}", get_dynamic_pt(takeaway, 16), True, theme["title"], PP_ALIGN.CENTER)
 
         except Exception as e: continue
 
@@ -377,8 +371,26 @@ def main():
         selected_template_name = st.selectbox("Select System Template:", list(available_templates.keys()))
         selected_template_path = available_templates[selected_template_name]
         
-        st.markdown("---")
         custom_template = st.file_uploader("Upload Custom Template (.pptx)", type="pptx")
+        
+        st.markdown("---")
+        st.subheader("Brand Kit")
+        col1, col2 = st.columns(2)
+        with col1:
+            title_hex = st.color_picker("Title", "#003366")
+            text_hex = st.color_picker("Text", "#334155")
+        with col2:
+            accent_hex = st.color_picker("Accent", "#009975")
+            border_hex = st.color_picker("Border", "#D4AF37")
+            
+        custom_theme = {
+            "title": hex_to_rgb_color(title_hex),
+            "accent": hex_to_rgb_color(accent_hex),
+            "card_bg": RGBColor(248, 250, 252), 
+            "card_border": hex_to_rgb_color(border_hex),
+            "text": hex_to_rgb_color(text_hex),
+            "chart": [hex_to_rgb_color(accent_hex), hex_to_rgb_color(border_hex), hex_to_rgb_color(title_hex), RGBColor(148, 163, 184)]
+        }
         
     st.subheader("Data Source")
     input_source = st.radio("Select input method:", ["File Upload (DOCX/PDF)", "Website URL"], label_visibility="collapsed")
@@ -442,7 +454,7 @@ def main():
             template_source = custom_template if custom_template else selected_template_path
             with st.spinner("Rendering slides..."):
                 try:
-                    buf = render_pptx_clean(st.session_state.edited_data, template_source, report_title)
+                    buf = render_pptx_clean(st.session_state.edited_data, template_source, report_title, custom_theme)
                     st.session_state.ppt_buffer = buf
                     st.success("PowerPoint generated successfully.")
                 except Exception as e:
