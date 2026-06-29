@@ -271,7 +271,7 @@ def set_p_format(paragraph, text, font_size, bold=False, color_rgb=None, alignme
     if color_rgb:
         paragraph.font.color.rgb = color_rgb
 
-    # Run-level (explicit, takes priority — đây là fix quan trọng)
+    # Run-level
     for run in paragraph.runs:
         run.font.name = 'Arial'
         run.font.size = font_size
@@ -676,7 +676,7 @@ def main():
                 if js and len(js.get('slides', [])) > 0:
                     st.session_state.slide_data = js
                     st.session_state.ppt_buffer = None
-                    status.update(label=f"✅ Trích xuất xong {len(js['slides'])} slide. Xem lại bên dưới.", state="complete")
+                    status.update(label=f"Trích xuất xong {len(js['slides'])} slide. Xem lại bên dưới.", state="complete")
                 else:
                     status.update(label="Hệ thống không trích xuất được dữ liệu có cấu trúc.", state="error")
             except Exception as e:
@@ -714,13 +714,13 @@ def main():
                         custom_theme
                     )
                     st.session_state.ppt_buffer = buf
-                    st.success("✅ PowerPoint đã được tạo thành công!")
+                    st.success("PowerPoint đã được tạo thành công!")
                 except Exception as e:
                     st.error(f"Render Error: {str(e)}")
 
     if st.session_state.ppt_buffer:
         st.download_button(
-            label="⬇️ Download PowerPoint File",
+            label="Download PowerPoint File",
             data=st.session_state.ppt_buffer,
             file_name="Universal_Presentation.pptx",
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
