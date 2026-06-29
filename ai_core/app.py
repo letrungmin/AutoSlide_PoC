@@ -176,18 +176,21 @@ def get_slide_json_from_llama3(chunks, status_container):
 def render_pptx_clean(slide_data, template_source, report_title, theme):
     prs = Presentation(template_source)
     
-    try:
-        cover_slide = prs.slides.add_slide(prs.slide_layouts[0])
-        for shape in cover_slide.placeholders:
-            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
-                shape.text = report_title.upper()
-                if shape.has_text_frame and shape.text_frame.paragraphs:
-                    shape.text_frame.paragraphs[0].font.color.rgb = theme["title"]
-    except Exception:
-        pass
+    # 1. Fill Cover Slide (Giả sử template luôn có slide bìa ở index 0)
+    if len(prs.slides) > 0:
+        cover_slide = prs.slides[0]
+        if cover_slide.shapes.title:
+            cover_slide.shapes.title.text = report_title.upper()
+            try:
+                for p in cover_slide.shapes.title.text_frame.paragraphs:
+                    p.font.color.rgb = theme["title"]
+            except: pass
 
     slides_list = slide_data.get('slides', slide_data) if isinstance(slide_data, dict) else slide_data
 
+    # Bắt đầu điền nội dung từ slide thứ 2 của template
+    slide_index = 1
+    
     for i, s_info in enumerate(slides_list):
         if not isinstance(s_info, dict): continue
         
@@ -206,30 +209,44 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
                 cleaned_bullets.append(b)
                 
         if not cleaned_bullets: 
-            cleaned_bullets = ["System is summarizing data..."]
+            cleaned_bullets = ["System is summarizing data...", "Please verify with the original document."]
         bullets = cleaned_bullets
         
         p_stocks = s_info.get('positive_stocks') or []
         n_stocks = s_info.get('negative_stocks') or []
         
+        # Gom mã cổ phiếu thành văn bản để không phá vỡ layout
         if p_stocks or n_stocks:
             stock_txt = "Market Signals: "
             if p_stocks: stock_txt += f"Positive ({', '.join(p_stocks)}). "
             if n_stocks: stock_txt += f"Negative ({', '.join(n_stocks)})."
             bullets.insert(0, stock_txt)
 
-        layout_idx = 1 if len(prs.slide_layouts) > 1 else 0
-        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+        # 2. Xử lý Logic lấy Slide: Đè lên slide có sẵn, nếu hết mới tạo thêm
+        if slide_index < len(prs.slides):
+            slide = prs.slides[slide_index]
+        else:
+            layout_idx = 1 if len(prs.slide_layouts) > 1 else 0
+            slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+            
+        slide_index += 1
 
+        # 3. Phân tích Placeholders (Tìm đúng khung thiết kế sẵn)
         title_shape = None
         body_shape = None
         
         for shape in slide.placeholders:
-            if shape.placeholder_format.type in [PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
+            # Type 1,3,4 thường là khung Title. Type 2,7 thường là khung Body.
+            if shape.placeholder_format.type in [1, 3, 4, PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE]:
                 title_shape = shape
-            elif shape.placeholder_format.type in [PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT]:
+            elif shape.placeholder_format.type in [2, 7, PP_PLACEHOLDER.BODY, PP_PLACEHOLDER.OBJECT]:
                 body_shape = shape
 
+        # Chống trượt: Nếu không tìm thấy placeholder title, thử lấy thuộc tính title mặc định
+        if not title_shape and slide.shapes.title:
+            title_shape = slide.shapes.title
+
+        # Bơm Tiêu đề
         if title_shape:
             title_shape.text = title.upper()
             try:
@@ -237,78 +254,68 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
                     p.font.color.rgb = theme["title"]
             except: pass
 
-        if not body_shape:
-            continue
-
-        avail_left = body_shape.left
-        avail_top = body_shape.top
-        avail_w = body_shape.width
-        avail_h = body_shape.height
-
-        if takeaway and (avail_top + avail_h > prs.slide_height - Inches(1.0)):
-            avail_h = prs.slide_height - avail_top - Inches(1.2)
-            body_shape.height = avail_h
-
-        if s_type == 'table':
-            sp = body_shape.element
-            sp.getparent().remove(sp)
-            t_data = s_info.get('table_data', [])
-            if len(t_data) > 1:
-                rows, cols = len(t_data), len(t_data[0])
-                table_shape = slide.shapes.add_table(rows, cols, avail_left, avail_top, avail_w, avail_h)
-                table = table_shape.table
-                for r_idx, row_data in enumerate(t_data):
-                    for c_idx, cell_data in enumerate(row_data):
-                        table.cell(r_idx, c_idx).text = str(cell_data)
-
-        elif s_type == 'chart':
-            sp = body_shape.element
-            sp.getparent().remove(sp)
-            c_data_dict = s_info.get('chart_data', {})
-            try:
-                clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
-                c_data = CategoryChartData()
-                c_data.categories = list(clean.keys())
-                c_data.add_series('Value', list(clean.values()))
-                slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, avail_left, avail_top, avail_w, avail_h, c_data)
-            except: pass
-
-        elif s_type == 'text':
-            domain = str(s_info.get('company_domain', '')).strip()
-            img_path = f"temp_{i}.png"
-            has_img = False
+        # Bơm Nội dung
+        if body_shape:
+            avail_left = body_shape.left
+            avail_top = body_shape.top
+            avail_w = body_shape.width
+            avail_h = body_shape.height
             
-            if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
-            elif get_image_robust(str(s_info.get('image_prompt', 'business')), "business", img_path): has_img = True
-            
-            tf = body_shape.text_frame
-            tf.clear() 
-            
-            if has_img:
-                half_w = int(avail_w * 0.5)
-                body_shape.width = half_w - Inches(0.2)
-                img_left = avail_left + half_w + Inches(0.2)
-                try: 
-                    slide.shapes.add_picture(img_path, img_left, avail_top, width=half_w - Inches(0.2))
-                    os.remove(img_path)
-                except: pass
+            if s_type == 'table':
+                sp = body_shape.element
+                sp.getparent().remove(sp)
+                t_data = s_info.get('table_data', [])
+                if len(t_data) > 1:
+                    rows, cols = len(t_data), len(t_data[0])
+                    table_shape = slide.shapes.add_table(rows, cols, avail_left, avail_top, avail_w, avail_h)
+                    table = table_shape.table
+                    for r_idx, row_data in enumerate(t_data):
+                        for c_idx, cell_data in enumerate(row_data):
+                            table.cell(r_idx, c_idx).text = str(cell_data)
 
-            for b_idx, b_text in enumerate(bullets):
-                p = tf.paragraphs[0] if b_idx == 0 else tf.add_paragraph()
-                p.text = b_text
-                p.level = 0 
+            elif s_type == 'chart':
+                sp = body_shape.element
+                sp.getparent().remove(sp)
+                c_data_dict = s_info.get('chart_data', {})
                 try:
-                    p.font.color.rgb = theme["text"]
+                    clean = {str(k): float(str(v).replace('%','').replace(',','')) for k, v in c_data_dict.items()}
+                    c_data = CategoryChartData()
+                    c_data.categories = list(clean.keys())
+                    c_data.add_series('Value', list(clean.values()))
+                    slide.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, avail_left, avail_top, avail_w, avail_h, c_data)
                 except: pass
 
+            elif s_type == 'text':
+                domain = str(s_info.get('company_domain', '')).strip()
+                img_path = f"temp_{i}.png"
+                has_img = False
+                
+                if domain and len(domain) > 3 and download_company_logo(domain, img_path): has_img = True
+                elif get_image_robust(str(s_info.get('image_prompt', 'business')), "business", img_path): has_img = True
+                
+                if has_img:
+                    half_w = int(avail_w * 0.5)
+                    img_left = avail_left + half_w + Inches(0.2)
+                    try: 
+                        slide.shapes.add_picture(img_path, img_left, avail_top, width=half_w - Inches(0.2))
+                        os.remove(img_path)
+                    except: pass
+                
+                # BƯỚC QUAN TRỌNG: Gán thẳng chữ vào shape có sẵn (Trigger Auto-Fit của template)
+                body_shape.text = "\n".join(bullets)
+                try:
+                    for p in body_shape.text_frame.paragraphs:
+                        p.font.color.rgb = theme["text"]
+                except: pass
+
+        # Thêm khung Takeaway ở cuối
         if takeaway:
             ban_top = prs.slide_height - Inches(0.8)
             ban = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), ban_top, prs.slide_width - Inches(1.0), Inches(0.5))
-            ban.fill.solid()
-            ban.fill.fore_color.rgb = theme["card_border"]
-            ban.line.fill.background = None
+            ban.fill.solid(); ban.fill.fore_color.rgb = theme["card_border"]; ban.line.fill.background = None
             
             tf = ban.text_frame
+            tf.margin_left = tf.margin_right = Inches(0.1)
             p = tf.paragraphs[0]
             p.text = f"TAKEAWAY: {takeaway}"
             try:
@@ -316,6 +323,12 @@ def render_pptx_clean(slide_data, template_source, report_title, theme):
                 p.font.bold = True
                 p.alignment = PP_ALIGN.CENTER
             except: pass
+
+    # 4. Xóa sạch các slide còn thừa trong template (nếu có)
+    for i in range(len(prs.slides) - 1, slide_index - 1, -1):
+        rId = prs.slides._sldIdLst[i].rId
+        prs.part.drop_rel(rId)
+        del prs.slides._sldIdLst[i]
 
     out = io.BytesIO()
     prs.save(out)
